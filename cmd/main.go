@@ -7,12 +7,12 @@ import (
 	"math"
 	"os"
 	"os/signal"
-	"strconv"
 	"strings"
 	"time"
 
 	"github.com/go-telegram/bot"
 	"github.com/go-telegram/bot/models"
+	"github.com/shopspring/decimal"
 )
 
 // Перечисление для состояний пользователя
@@ -22,6 +22,7 @@ const (
 	StateIdle UserState = iota
 	StateAwaitingSavePair
 	StateAwaitingDealPair
+	StateAwaitingAmount
 	StateAwaitingBuyPrice
 	StateAwaitingSellPrice
 )
@@ -40,10 +41,11 @@ type User struct {
 
 type Deal struct {
 	Pair          string
-	BuyPrice      float64
-	SellPrice     float64
-	Profit        float64
-	ProfitPercent float64
+	Amount        decimal.Decimal
+	BuyPrice      decimal.Decimal
+	SellPrice     decimal.Decimal
+	Profit        decimal.Decimal
+	ProfitPercent decimal.Decimal
 	Date          time.Time
 }
 
@@ -65,6 +67,9 @@ func main() {
 	}
 
 	b.RegisterHandler(bot.HandlerTypeMessageText, "/start", bot.MatchTypeExact, startCommand)
+	b.RegisterHandler(bot.HandlerTypeMessageText, "/add_deal", bot.MatchTypeExact, addDeal_callbackHandler)
+	b.RegisterHandler(bot.HandlerTypeMessageText, "/add_pair", bot.MatchTypeExact, addPair_callbackHandler)
+	b.RegisterHandler(bot.HandlerTypeMessageText, "/get_history", bot.MatchTypeExact, getHistory_callbackHandler)
 
 	b.Start(ctx)
 }
@@ -76,21 +81,70 @@ func defaultHandler(ctx context.Context, b *bot.Bot, update *models.Update) {
 	switch currentState {
 	case StateAwaitingSavePair:
 		log.Println("saved")
+		if update.Message.Text == "" {
+			b.SendMessage(ctx, &bot.SendMessageParams{
+				ChatID: chatID,
+				Text:   "введите текстом. Или если очень хочется эмодзи :))",
+			})
+			return
+		}
 		b.SendMessage(ctx, &bot.SendMessageParams{
 			ChatID: chatID,
 			Text:   "Успешно сохранили вашу пару: " + update.Message.Text + " ✅",
 		})
-		users[getChatID(update)].UserPairs[update.Message.Text] = struct{}{}
+		users[getChatID(update)].UserPairs[strings.ToUpper(update.Message.Text)] = struct{}{}
 		usersStates[update.Message.Chat.ID] = StateIdle
+		err := showStandardButtons(ctx, b, update)
+		if err != nil {
+			log.Printf("can't send message to %v, error : %v", chatID, err)
+		}
 	case StateAwaitingDealPair:
 		handlePairSelection(ctx, b, update)
+	case StateAwaitingAmount:
+		handleAmount(ctx, b, update)
 	case StateAwaitingBuyPrice:
 		handleBuyPrice(ctx, b, update)
 	case StateAwaitingSellPrice:
 		handleSellPrice(ctx, b, update)
 	default:
-		showStandardButtons(ctx, b, update)
+		err := showStandardButtons(ctx, b, update)
+		if err != nil {
+			log.Printf("can't send message to %v, error : %v", chatID, err)
+		}
 	}
+}
+
+func handleAmount(ctx context.Context, b *bot.Bot, update *models.Update) {
+	userChatID := getChatID(update)
+	if userChatID == 0 {
+		return
+	}
+
+	user, ok := users[userChatID]
+	if !ok {
+		log.Println("User not found")
+		return
+	}
+
+	amount, err := decimal.NewFromString(update.Message.Text)
+	if err != nil {
+		log.Println("Error parsing amount:", err)
+		b.SendMessage(ctx, &bot.SendMessageParams{
+			ChatID: userChatID,
+			Text:   "невалидный формат",
+		})
+		return
+	}
+
+	user.PendingDeal.Amount = amount
+	// Запрашиваем цену продажи
+	b.SendMessage(ctx, &bot.SendMessageParams{
+		ChatID: userChatID,
+		Text:   "Укажите цену покупки:",
+	})
+
+	// Устанавливаем состояние пользователя в ожидание ввода количества
+	usersStates[userChatID] = StateAwaitingBuyPrice
 }
 
 func addPair_callbackHandler(ctx context.Context, b *bot.Bot, update *models.Update) {
@@ -125,7 +179,7 @@ func addDeal_callbackHandler(ctx context.Context, b *bot.Bot, update *models.Upd
 	// Проверяем, есть ли у пользователя пары
 	if len(user.UserPairs) == 0 {
 		b.SendMessage(ctx, &bot.SendMessageParams{
-			ChatID: update.CallbackQuery.Message.Message.Chat.ID,
+			ChatID: userChatID,
 			Text:   "У вас пока нет ни одной пары для добавления сделки. Вы можете добавить их с помощью кнопки 'Добавить пару'.",
 		})
 		return
@@ -147,6 +201,10 @@ func addDeal_callbackHandler(ctx context.Context, b *bot.Bot, update *models.Upd
 }
 
 func handlePairSelection(ctx context.Context, b *bot.Bot, update *models.Update) {
+	if update.CallbackQuery == nil {
+		return
+	}
+
 	userChatID := getChatID(update)
 	if userChatID == 0 {
 		return
@@ -168,11 +226,11 @@ func handlePairSelection(ctx context.Context, b *bot.Bot, update *models.Update)
 	// Запрашиваем цену покупки
 	b.SendMessage(ctx, &bot.SendMessageParams{
 		ChatID: userChatID,
-		Text:   "Укажите цену покупки:",
+		Text:   "Укажите количесвто:",
 	})
 
-	// Устанавливаем состояние пользователя в ожидание ввода первого поля сделки (BuyPrice)
-	usersStates[userChatID] = StateAwaitingBuyPrice
+	// Устанавливаем состояние пользователя в ожидание ввода количества
+	usersStates[userChatID] = StateAwaitingAmount
 }
 
 func handleBuyPrice(ctx context.Context, b *bot.Bot, update *models.Update) {
@@ -188,7 +246,7 @@ func handleBuyPrice(ctx context.Context, b *bot.Bot, update *models.Update) {
 		return
 	}
 
-	buyPrice, err := strconv.ParseFloat(update.Message.Text, 64)
+	buyPrice, err := decimal.NewFromString(update.Message.Text)
 	if err != nil {
 		log.Println("Error parsing buy price:", err)
 		b.SendMessage(ctx, &bot.SendMessageParams{
@@ -223,8 +281,7 @@ func handleSellPrice(ctx context.Context, b *bot.Bot, update *models.Update) {
 	}
 
 	// Получаем цену покупки
-	update.Message.Text = strings.Replace(update.Message.Text, ",", ".", -1)
-	sellPrice, err := strconv.ParseFloat(update.Message.Text, 64)
+	sellPrice, err := decimal.NewFromString(update.Message.Text)
 	if err != nil {
 		log.Println("Error parsing buy price:", err)
 		b.SendMessage(ctx, &bot.SendMessageParams{
@@ -244,17 +301,20 @@ func handleSellPrice(ctx context.Context, b *bot.Bot, update *models.Update) {
 }
 
 func completeDeal(ctx context.Context, b *bot.Bot, userChatID int64, user *User) {
-	user.PendingDeal.Profit = user.PendingDeal.SellPrice - user.PendingDeal.BuyPrice
-	user.PendingDeal.ProfitPercent = truncateFloat((user.PendingDeal.Profit/user.PendingDeal.BuyPrice)*100, 2)
+	// Профит = (цена продажи - цена покупки) * количество
+	user.PendingDeal.Profit = user.PendingDeal.SellPrice.Sub(user.PendingDeal.BuyPrice).Mul(user.PendingDeal.Amount)
+	// Процент прибыли = (цена продажи - цена покупки) / цена покупки * 100
+	user.PendingDeal.ProfitPercent = user.PendingDeal.SellPrice.Sub(user.PendingDeal.BuyPrice).Div(user.PendingDeal.BuyPrice).Mul(decimal.NewFromInt(100))
 
 	user.PendingDeal.Date = time.Now()
 
 	user.UserDeals = append(user.UserDeals, user.PendingDeal)
 	dealText := "<b> Сделка успешно добавлена 🎉 Ваша сделка:</b>\n" +
-		"<b>Покупка:</b> " + strconv.FormatFloat(user.PendingDeal.BuyPrice, 'f', 2, 64) + "\n" +
-		"<b>Продажа:</b> " + strconv.FormatFloat(user.PendingDeal.SellPrice, 'f', 2, 64) + "\n" +
-		"<b>Прибыль:</b> " + strconv.FormatFloat(user.PendingDeal.Profit, 'f', 2, 64) + "\n" +
-		"<b>Процент прибыли:</b> " + strconv.FormatFloat(user.PendingDeal.ProfitPercent, 'f', 2, 64) + "%\n"
+		"<b>Покупка:</b> " + user.PendingDeal.BuyPrice.String() + "\n" +
+		"<b>Количество:</b> " + user.PendingDeal.Amount.String() + "\n" +
+		"<b>Продажа:</b> " + user.PendingDeal.SellPrice.String() + "\n" +
+		"<b>Прибыль:</b> " + user.PendingDeal.Profit.String() + "$\n" +
+		"<b>Процент прибыли:</b> " + user.PendingDeal.ProfitPercent.String() + "%\n"
 	fmt.Printf("%s deal: \nbuy price %v\nsell price %v \nprofit %v\nprofit percentage %v\n", user.Name, user.PendingDeal.BuyPrice, user.PendingDeal.SellPrice, user.PendingDeal.Profit, user.PendingDeal.ProfitPercent)
 	b.SendMessage(ctx, &bot.SendMessageParams{
 		ChatID:    userChatID,
@@ -265,8 +325,9 @@ func completeDeal(ctx context.Context, b *bot.Bot, userChatID int64, user *User)
 }
 
 func getHistory_callbackHandler(ctx context.Context, b *bot.Bot, update *models.Update) {
+	chatID := getChatID(update)
 	b.SendMessage(ctx, &bot.SendMessageParams{
-		ChatID: update.CallbackQuery.Message.Message.Chat.ID,
+		ChatID: chatID,
 		Text:   "пока не реализованная функция 🙈",
 	})
 	showStandardButtons(ctx, b, update)
@@ -274,6 +335,24 @@ func getHistory_callbackHandler(ctx context.Context, b *bot.Bot, update *models.
 
 func showMessageWithUserName(next bot.HandlerFunc) bot.HandlerFunc {
 	return func(ctx context.Context, b *bot.Bot, update *models.Update) {
+		chatID := getChatID(update)
+		if _, ok := users[chatID]; !ok {
+			var deals []*Deal
+			var uName string
+			if update.Message != nil {
+				uName = update.Message.Chat.Username
+			} else if update.CallbackQuery != nil {
+				uName = update.CallbackQuery.Message.Message.Chat.Username
+			}
+			users[chatID] = &User{
+				Name:      uName,
+				UserPairs: make(map[string]struct{}),
+				UserDeals: deals,
+			}
+
+			log.Println("Saved new user: ", uName)
+		}
+
 		if update.Message != nil {
 			log.Printf("%s say: %s", update.Message.From.Username, update.Message.Text)
 		}
@@ -282,7 +361,7 @@ func showMessageWithUserName(next bot.HandlerFunc) bot.HandlerFunc {
 }
 
 func startCommand(ctx context.Context, b *bot.Bot, update *models.Update) {
-	message := "Привет 👋\nЭто Бот с помощью которого можно вести учет ваших сделок📖\n\nПоддерживаемые команды:\n/add_deal - добавить новую сделку\n/get_history - получить историю сделок"
+	message := "Привет 👋\nЭто Бот с помощью которого можно вести учет ваших сделок📖\n\nПоддерживаемые команды:\n/add_deal - добавить новую сделку\n/add\n/get_history - получить историю сделок"
 	_, err := b.SendMessage(ctx, &bot.SendMessageParams{
 		ChatID: update.Message.Chat.ID,
 		Text:   message,
@@ -302,7 +381,10 @@ func startCommand(ctx context.Context, b *bot.Bot, update *models.Update) {
 		log.Println("Saved new user: ", update.Message.Chat.Username)
 	}
 
-	showStandardButtons(ctx, b, update)
+	err = showStandardButtons(ctx, b, update)
+	if err != nil {
+		log.Printf("can't send message to %v, error : %v", update.Message.Chat.ID, err)
+	}
 }
 
 func showStandardButtons(ctx context.Context, b *bot.Bot, update *models.Update) error {
