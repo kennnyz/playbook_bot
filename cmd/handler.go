@@ -3,12 +3,13 @@ package main
 import (
 	"context"
 	"fmt"
-	"github.com/go-telegram/bot"
-	"github.com/go-telegram/bot/models"
-	"github.com/shopspring/decimal"
 	"log"
 	"strings"
 	"time"
+
+	"github.com/go-telegram/bot"
+	"github.com/go-telegram/bot/models"
+	"github.com/shopspring/decimal"
 )
 
 func defaultHandler(ctx context.Context, b *bot.Bot, update *models.Update) {

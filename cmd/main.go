@@ -2,9 +2,10 @@ package main
 
 import (
 	"context"
-	"github.com/go-telegram/bot"
 	"os"
 	"os/signal"
+
+	"github.com/go-telegram/bot"
 )
 
 // Мапа для отслеживания состояний пользователей
