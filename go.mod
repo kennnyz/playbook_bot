@@ -1,6 +1,6 @@
 module playbook_bot
 
-go 1.21.7
+go 1.22
 
 require (
 	github.com/go-telegram/bot v1.1.4

@@ -25,7 +25,7 @@ func main() {
 		bot.WithMiddlewares(showMessageWithUserName),
 	}
 
-	token := os.Getenv("api_key")
+	token := os.Getenv("API_KEY")
 	if token == "" {
 		panic("API key not provided!")
 	}
