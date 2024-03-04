@@ -84,7 +84,7 @@ func handleAmount(ctx context.Context, b *bot.Bot, update *models.Update) {
 		return
 	}
 
-	amount, err := decimal.NewFromString(update.Message.Text)
+	amount, err := decimal.NewFromString(strings.ReplaceAll(update.Message.Text, ",", "."))
 	if err != nil {
 		log.Println("Error parsing amount:", err)
 		if _, err := b.SendMessage(ctx, &bot.SendMessageParams{

@@ -18,6 +18,7 @@ const (
 
 type User struct {
 	Name        string
+	ID          int64
 	UserPairs   map[string]struct{}
 	UserDeals   []*Deal
 	PendingDeal *Deal
