@@ -18,15 +18,13 @@ const (
 )
 
 type User struct {
-	Name        string
-	ID          int64
-	UserPairs   map[string]struct{}
-	UserDeals   []*Deal
-	PendingDeal *Deal
+	Name   string
+	ChatID int64
 }
 
 type Deal struct {
 	Pair          string
+	ID            int64
 	Amount        decimal.Decimal
 	BuyPrice      decimal.Decimal
 	SellPrice     decimal.Decimal

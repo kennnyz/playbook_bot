@@ -11,8 +11,9 @@ import (
 // Мапа для отслеживания состояний пользователей
 var usersStates = make(map[int64]UserState)
 
-// tmp database
-var users = make(map[int64]*User)
+var usersPendingDeal = make(map[int64]*Deal)
+
+var Repository *repository
 
 func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
@@ -32,6 +33,16 @@ func main() {
 	}
 
 	b, err := bot.New(token, opts...)
+	if err != nil {
+		panic(err)
+	}
+
+	dsn := os.Getenv("DSN")
+	if dsn == "" {
+		panic("DSN not provided!")
+	}
+
+	Repository, err = newRepository(dsn)
 	if err != nil {
 		panic(err)
 	}

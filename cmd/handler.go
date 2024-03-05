@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -48,14 +50,27 @@ func handleSavePair(ctx context.Context, b *bot.Bot, update *models.Update) {
 		return
 	}
 
-	user := users[chatID]
-	if user == nil {
-		log.Println("User not found")
-		// TODO create
+	if err := validatePair(update.Message.Text); err != nil {
+		if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
+			ChatID: chatID,
+			Text:   err.Error(),
+		}); err != nil {
+			log.Println("error sending msg ", getChatID(update), err)
+			return
+		}
 		return
 	}
 
-	user.UserPairs[strings.ToUpper(update.Message.Text)] = struct{}{}
+	if err := Repository.savePair(chatID, strings.ToUpper(update.Message.Text)); err != nil {
+		if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
+			ChatID: chatID,
+			Text:   "Ошибка сохранение пары",
+		}); err != nil {
+			log.Println("error sending msg ", getChatID(update), err)
+			return
+		}
+		return
+	}
 	usersStates[chatID] = StateIdle
 
 	if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
@@ -65,7 +80,6 @@ func handleSavePair(ctx context.Context, b *bot.Bot, update *models.Update) {
 		log.Println("error sending msg ", getChatID(update), err)
 		return
 	}
-	log.Printf("%s saved pair %s", user.Name, strings.ToUpper(update.Message.Text))
 
 	err := showStandardButtons(ctx, b, update)
 	if err != nil {
@@ -79,25 +93,19 @@ func handleAmount(ctx context.Context, b *bot.Bot, update *models.Update) {
 		return
 	}
 
-	user, ok := users[chatID]
-	if !ok {
-		log.Println("User not found")
-		return
-	}
-
-	amount, err := decimal.NewFromString(strings.ReplaceAll(update.Message.Text, ",", "."))
+	amount, err := validatePrice(update.Message.Text)
 	if err != nil {
-		log.Println("Error parsing amount:", err)
 		if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
 			ChatID: chatID,
-			Text:   "невалидный формат",
+			Text:   err.Error(),
 		}); err != nil {
-			log.Printf("can't send message to %v, error: %v", chatID, err)
+			log.Println("error sending msg ", getChatID(update), err)
+			return
 		}
 		return
 	}
 
-	user.PendingDeal.Amount = amount
+	usersPendingDeal[chatID].Amount = amount
 	if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
 		ChatID: chatID,
 		Text:   "Укажите цену покупки:",
@@ -107,6 +115,7 @@ func handleAmount(ctx context.Context, b *bot.Bot, update *models.Update) {
 	}
 
 	usersStates[chatID] = StateAwaitingBuyPrice
+	log.Printf("update user %v state for %v  ", chatID, StateAwaitingBuyPrice)
 }
 
 func addPairCallbackHandler(ctx context.Context, b *bot.Bot, update *models.Update) {
@@ -144,14 +153,15 @@ func addDealCallbackHandler(ctx context.Context, b *bot.Bot, update *models.Upda
 	}
 
 	// Получаем пользователя
-	user, ok := users[chatID]
-	if !ok {
-		log.Println("User not found")
+	userPairs, err := Repository.getPairs(chatID)
+	if err != nil {
+		log.Println("Error getting pairs: ", err)
 		return
 	}
-	log.Println("adding deal to ", user.Name)
 
-	if len(user.UserPairs) == 0 {
+	log.Println("adding deal to ", chatID)
+
+	if len(userPairs) == 0 {
 		if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
 			ChatID: chatID,
 			Text:   "У вас пока нет ни одной пары для добавления сделки. Вы можете добавить их с помощью кнопки 'Добавить пару'.",
@@ -164,7 +174,7 @@ func addDealCallbackHandler(ctx context.Context, b *bot.Bot, update *models.Upda
 	}
 
 	var keyboard [][]models.InlineKeyboardButton
-	for pair := range user.UserPairs {
+	for _, pair := range userPairs {
 		keyboard = append(keyboard, []models.InlineKeyboardButton{{Text: pair, CallbackData: pair}})
 	}
 
@@ -191,15 +201,12 @@ func handlePairSelection(ctx context.Context, b *bot.Bot, update *models.Update)
 		return
 	}
 
-	// Получаем пользователя
-	user, ok := users[chatID]
-	if !ok {
-		log.Println("User not found")
+	ok, err := Repository.getPair(chatID, update.CallbackQuery.Data)
+	if err != nil {
+		log.Println("Error getting pair: ", err)
 		return
 	}
-
-	// Получаем выбранную пользователем пару
-	if _, ok := user.UserPairs[update.CallbackQuery.Data]; !ok {
+	if !ok {
 		if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
 			ChatID: chatID,
 			Text:   "no such pair",
@@ -208,12 +215,10 @@ func handlePairSelection(ctx context.Context, b *bot.Bot, update *models.Update)
 			return
 		}
 	}
-	user.PendingDeal = &Deal{Pair: update.CallbackQuery.Data}
 
-	if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
-		ChatID: chatID,
-		Text:   "Укажите количесвто:",
-	}); err != nil {
+	usersPendingDeal[chatID] = &Deal{Pair: update.CallbackQuery.Data}
+
+	if _, err := b.SendMessage(ctx, &bot.SendMessageParams{ChatID: chatID, Text: "Укажите количесвто:"}); err != nil {
 		log.Println("error sending msg ", getChatID(update), err)
 		return
 	}
@@ -228,27 +233,18 @@ func handleBuyPrice(ctx context.Context, b *bot.Bot, update *models.Update) {
 		return
 	}
 
-	// Получаем пользователя
-	user, ok := users[chatID]
-	if !ok {
-		log.Println("User not found")
-		return
-	}
-
-	buyPrice, err := decimal.NewFromString(strings.ReplaceAll(update.Message.Text, ",", "."))
+	buyPrice, err := validatePrice(update.Message.Text)
 	if err != nil {
-		log.Println("Error parsing buy price:", err)
 		if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
 			ChatID: chatID,
-			Text:   "невалидный формат",
+			Text:   err.Error(),
 		}); err != nil {
 			log.Println("error sending msg ", getChatID(update), err)
 			return
 		}
-
 		return
 	}
-	user.PendingDeal.BuyPrice = buyPrice
+	usersPendingDeal[chatID].BuyPrice = buyPrice
 
 	if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
 		ChatID: chatID,
@@ -268,29 +264,21 @@ func handleSellPrice(ctx context.Context, b *bot.Bot, update *models.Update) {
 		return
 	}
 
-	// Получаем пользователя
-	user, ok := users[chatID]
-	if !ok {
-		log.Println("User not found")
-		return
-	}
-
 	// Получаем цену покупки
-	sellPrice, err := decimal.NewFromString(strings.ReplaceAll(update.Message.Text, ",", "."))
+	sellPrice, err := validatePrice(update.Message.Text)
 	if err != nil {
-		log.Println("Error parsing buy price:", err)
 		if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
 			ChatID: chatID,
-			Text:   "невалидный формат",
+			Text:   err.Error(),
 		}); err != nil {
-			log.Printf("can't send message to %v, error: %v", chatID, err)
+			log.Println("error sending msg ", getChatID(update), err)
 			return
 		}
 		return
 	}
-	user.PendingDeal.SellPrice = sellPrice
+	usersPendingDeal[chatID].SellPrice = sellPrice
 
-	completeDeal(ctx, b, chatID, user)
+	completeDeal(ctx, b, chatID, usersPendingDeal[chatID])
 
 	if err := showStandardButtons(ctx, b, update); err != nil {
 		log.Printf("can't send message to %v, error: %v", chatID, err)
@@ -301,22 +289,36 @@ func handleSellPrice(ctx context.Context, b *bot.Bot, update *models.Update) {
 	log.Printf("update user %v state for %v  ", chatID, StateIdle)
 }
 
-func completeDeal(ctx context.Context, b *bot.Bot, chatID int64, user *User) {
+func completeDeal(ctx context.Context, b *bot.Bot, chatID int64, PendingDeal *Deal) {
 	// Профит = (цена продажи - цена покупки) * количество
-	user.PendingDeal.Profit = user.PendingDeal.SellPrice.Sub(user.PendingDeal.BuyPrice).Mul(user.PendingDeal.Amount)
+	PendingDeal.Profit = PendingDeal.SellPrice.Sub(PendingDeal.BuyPrice).Mul(PendingDeal.Amount)
 	// Процент прибыли = (цена продажи - цена покупки) / цена покупки * 100
-	user.PendingDeal.ProfitPercent = user.PendingDeal.SellPrice.Sub(user.PendingDeal.BuyPrice).Div(user.PendingDeal.BuyPrice).Mul(decimal.NewFromInt(100))
+	PendingDeal.ProfitPercent = PendingDeal.SellPrice.Sub(PendingDeal.BuyPrice).Div(PendingDeal.BuyPrice).Mul(decimal.NewFromInt(100))
 
-	user.PendingDeal.Date = time.Now()
+	PendingDeal.Date = time.Now()
 
-	user.UserDeals = append(user.UserDeals, user.PendingDeal)
+	err := Repository.saveDeal(PendingDeal, chatID)
+	if err != nil {
+		log.Println("Error saving deal: ", err)
+		if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
+			ChatID:    chatID,
+			Text:      "Ошибка сохранения сделки",
+			ParseMode: "HTML",
+		}); err != nil {
+			log.Printf("can't send message to %v, error: %v", chatID, err)
+		}
+
+		return
+	}
+
 	dealText := "<b> Сделка успешно добавлена 🎉 Ваша сделка:</b>\n" +
-		"<b>Количество:</b> " + user.PendingDeal.Amount.String() + "\n" +
-		"<b>Покупка:</b> " + user.PendingDeal.BuyPrice.String() + "\n" +
-		"<b>Продажа:</b> " + user.PendingDeal.SellPrice.String() + "\n" +
-		"<b>Прибыль:</b> " + user.PendingDeal.Profit.String() + "$\n" +
-		"<b>Процент прибыли:</b> " + user.PendingDeal.ProfitPercent.Truncate(3).String() + "%\n"
-	fmt.Printf("%s deal: \nbuy price %v\nsell price %v \nprofit %v\nprofit percentage %v\n", user.Name, user.PendingDeal.BuyPrice, user.PendingDeal.SellPrice, user.PendingDeal.Profit, user.PendingDeal.ProfitPercent)
+		"<b>Пара:</b> " + PendingDeal.Pair + "\n" +
+		"<b>Количество:</b> " + PendingDeal.Amount.String() + "\n" +
+		"<b>Покупка:</b> " + PendingDeal.BuyPrice.String() + "\n" +
+		"<b>Продажа:</b> " + PendingDeal.SellPrice.String() + "\n" +
+		"<b>Прибыль:</b> " + PendingDeal.Profit.String() + "$\n" +
+		"<b>Процент прибыли:</b> " + PendingDeal.ProfitPercent.Truncate(3).String() + "%\n"
+	fmt.Printf("%v deal: \nbuy price %v\nsell price %v \nprofit %v\nprofit percentage %v\n", chatID, PendingDeal.BuyPrice, PendingDeal.SellPrice, PendingDeal.Profit, PendingDeal.ProfitPercent)
 
 	if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
 		ChatID:    chatID,
@@ -325,7 +327,8 @@ func completeDeal(ctx context.Context, b *bot.Bot, chatID int64, user *User) {
 	}); err != nil {
 		log.Printf("can't send message to %v, error: %v", chatID, err)
 	}
-	user.PendingDeal = nil
+
+	usersPendingDeal[chatID] = nil
 }
 
 func getHistoryCallbackHandler(ctx context.Context, b *bot.Bot, update *models.Update) {
@@ -363,7 +366,7 @@ func showStandardButtons(ctx context.Context, b *bot.Bot, update *models.Update)
 		ReplyMarkup: kb,
 	})
 	if err != nil {
-		log.Printf("can't send message to %s, error : %v", update.Message.Chat.Username, err)
+		log.Printf("can't send message to %s, error : %v", getUserName(update), err)
 		return err
 	}
 
@@ -372,27 +375,24 @@ func showStandardButtons(ctx context.Context, b *bot.Bot, update *models.Update)
 
 func startCommand(ctx context.Context, b *bot.Bot, update *models.Update) {
 	message := "Привет 👋\nЭто Бот с помощью которого можно вести учет ваших сделок📖\n\nПоддерживаемые команды:\n/add_deal - добавить новую сделку\n/add_pair - добавить актив/пару\n/get_history - получить историю сделок"
-	_, err := b.SendMessage(ctx, &bot.SendMessageParams{
+	if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
 		ChatID: update.Message.Chat.ID,
 		Text:   message,
-	})
-	if err != nil {
-		log.Printf("can't send message to %s, error : %v", update.Message.Chat.Username, err)
+	}); err != nil {
+		log.Printf("can't send message to %s, error : %v", getUserName(update), err)
 	}
 
-	if _, ok := users[update.Message.Chat.ID]; !ok {
-		var deals []*Deal
-		users[update.Message.Chat.ID] = &User{
-			Name:      update.Message.Chat.Username,
-			UserPairs: make(map[string]struct{}),
-			UserDeals: deals,
-		}
+	if user, err := Repository.getUser(getChatID(update)); errors.Is(err, sql.ErrNoRows) || user == nil {
+		// Пользователя нет в базе, создаем нового
+		err = Repository.saveUser(&User{
+			Name:   getUserName(update),
+			ChatID: getChatID(update),
+		})
 
-		log.Println("Saved new user: ", update.Message.Chat.Username)
+		log.Println("Saved new user: ", getUserName(update))
 	}
 
-	err = showStandardButtons(ctx, b, update)
-	if err != nil {
+	if err := showStandardButtons(ctx, b, update); err != nil {
 		log.Printf("can't send message to %v, error : %v", update.Message.Chat.ID, err)
 	}
 }
@@ -400,26 +400,25 @@ func startCommand(ctx context.Context, b *bot.Bot, update *models.Update) {
 func showMessageWithUserName(next bot.HandlerFunc) bot.HandlerFunc {
 	return func(ctx context.Context, b *bot.Bot, update *models.Update) {
 		chatID := getChatID(update)
-		if _, ok := users[chatID]; !ok {
-			var deals []*Deal
-			var uName string
-			if update.Message != nil {
-				uName = update.Message.Chat.Username
-			} else if update.CallbackQuery != nil {
-				uName = update.CallbackQuery.Message.Message.Chat.Username
-			}
-			users[chatID] = &User{
-				Name:      uName,
-				UserPairs: make(map[string]struct{}),
-				UserDeals: deals,
-			}
+		if user, err := Repository.getUser(chatID); errors.Is(err, sql.ErrNoRows) || user == nil {
+			err = Repository.saveUser(&User{
+				Name:   getUserName(update),
+				ChatID: chatID,
+			})
 
-			log.Println("Saved new user: ", uName)
+			log.Println("Saved new user: ", getUserName(update))
+		}
+
+		user, err := Repository.getUser(chatID)
+		if err != nil || user == nil {
+			log.Println("Error getting user: ", err)
+			return
 		}
 
 		if update.Message != nil {
-			log.Printf("%s say: %s", update.Message.From.Username, update.Message.Text)
+			log.Printf("%s say: %s", user.Name, update.Message.Text)
 		}
+
 		next(ctx, b, update)
 	}
 }
@@ -432,4 +431,51 @@ func getChatID(update *models.Update) int64 {
 	}
 
 	return 0
+}
+
+func getUserName(update *models.Update) string {
+	if update.Message != nil {
+		return update.Message.Chat.Username
+	} else if update.CallbackQuery != nil {
+		return update.CallbackQuery.Message.Message.Chat.Username
+	}
+
+	return ""
+}
+
+func validatePrice(price string) (decimal.Decimal, error) {
+	if price == "" {
+		return decimal.Decimal{}, fmt.Errorf("empty price")
+	}
+
+	if strings.Contains(price, ",") {
+		price = strings.ReplaceAll(price, ",", ".")
+	}
+
+	if len(price) > 12 {
+		return decimal.Decimal{}, fmt.Errorf("слишком большое число")
+	}
+
+	res, err := decimal.NewFromString(price)
+	if err != nil {
+		return decimal.Decimal{}, fmt.Errorf("невалидный формат")
+	}
+
+	if res.LessThan(decimal.NewFromInt(0)) {
+		return decimal.Decimal{}, fmt.Errorf("не может быть отрицательным числом")
+	}
+
+	return res, nil
+}
+
+func validatePair(pair string) error {
+	if pair == "" {
+		return fmt.Errorf("empty pair")
+	}
+
+	if len(pair) > 20 {
+		return fmt.Errorf("слишком длинное название")
+	}
+
+	return nil
 }
