@@ -11,6 +11,7 @@ import (
 
 	"github.com/go-telegram/bot"
 	"github.com/go-telegram/bot/models"
+	"github.com/go-telegram/ui/paginator"
 	"github.com/shopspring/decimal"
 )
 
@@ -39,6 +40,11 @@ func defaultHandler(ctx context.Context, b *bot.Bot, update *models.Update) {
 
 func handleSavePair(ctx context.Context, b *bot.Bot, update *models.Update) {
 	chatID := getChatID(update)
+
+	if update.Message == nil {
+		return
+	}
+
 	if update.Message.Text == "" {
 		if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
 			ChatID: chatID,
@@ -291,9 +297,9 @@ func handleSellPrice(ctx context.Context, b *bot.Bot, update *models.Update) {
 
 func completeDeal(ctx context.Context, b *bot.Bot, chatID int64, PendingDeal *Deal) {
 	// Профит = (цена продажи - цена покупки) * количество
-	PendingDeal.Profit = PendingDeal.SellPrice.Sub(PendingDeal.BuyPrice).Mul(PendingDeal.Amount)
+	PendingDeal.Profit = PendingDeal.SellPrice.Sub(PendingDeal.BuyPrice).Mul(PendingDeal.Amount).Truncate(3)
 	// Процент прибыли = (цена продажи - цена покупки) / цена покупки * 100
-	PendingDeal.ProfitPercent = PendingDeal.SellPrice.Sub(PendingDeal.BuyPrice).Div(PendingDeal.BuyPrice).Mul(decimal.NewFromInt(100))
+	PendingDeal.ProfitPercent = PendingDeal.SellPrice.Sub(PendingDeal.BuyPrice).Div(PendingDeal.BuyPrice).Mul(decimal.NewFromInt(100)).Truncate(3)
 
 	PendingDeal.Date = time.Now()
 
@@ -332,18 +338,33 @@ func completeDeal(ctx context.Context, b *bot.Bot, chatID int64, PendingDeal *De
 }
 
 func getHistoryCallbackHandler(ctx context.Context, b *bot.Bot, update *models.Update) {
-	chatID := getChatID(update)
-	if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
-		ChatID: chatID,
-		Text:   "пока не реализованная функция 🙈",
-	}); err != nil {
-		log.Printf("can't send message to %v, error: %v", chatID, err)
+	opts := []paginator.Option{
+		paginator.PerPage(3),
+		paginator.WithCloseButton("Close"),
+	}
+
+	userDeals, err := Repository.getDeals(getChatID(update))
+	if err != nil {
+		log.Println("Error getting deals: ", err)
+		if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
+			ChatID: getChatID(update),
+			Text:   "Ошибка получения истории сделок",
+		}); err != nil {
+			log.Printf("can't send message to %v, error: %v", getChatID(update), err)
+		}
+
 		return
 	}
 
-	if err := showStandardButtons(ctx, b, update); err != nil {
-		log.Printf("can't send message to %v, error: %v", chatID, err)
-		return
+	data := make([]string, 0, len(userDeals))
+	for i, deal := range userDeals {
+		data = append(data, telegramFormatString(fmt.Sprintf("%v. Пара: %s\nКоличество: %s\nПокупка: %s$\nПродажа: %s$\nПрибыль: %s$\nПроцент прибыли: %s%%\nДата: %s\n", i+1, deal.Pair, deal.Amount.String(), deal.BuyPrice.String(), deal.SellPrice.String(), deal.Profit.String(), deal.ProfitPercent.String(), deal.Date.Format("02-01-2006"))))
+	}
+
+	p := paginator.New(data, opts...)
+
+	if _, err := p.Show(ctx, b, getChatID(update)); err != nil {
+		log.Printf("can't send message to %v, error: %v", getChatID(update), err)
 	}
 }
 
@@ -383,7 +404,6 @@ func startCommand(ctx context.Context, b *bot.Bot, update *models.Update) {
 	}
 
 	if user, err := Repository.getUser(getChatID(update)); errors.Is(err, sql.ErrNoRows) || user == nil {
-		// Пользователя нет в базе, создаем нового
 		err = Repository.saveUser(&User{
 			Name:   getUserName(update),
 			ChatID: getChatID(update),
@@ -478,4 +498,38 @@ func validatePair(pair string) error {
 	}
 
 	return nil
+}
+
+func telegramFormatString(input string) string {
+	replaceMap := map[rune]string{
+		'_': "\\_",
+		'*': "\\*",
+		'[': "\\[",
+		']': "\\]",
+		'(': "\\(",
+		')': "\\)",
+		'~': "\\~",
+		'`': "\\`",
+		'>': "\\>",
+		'#': "\\#",
+		'+': "\\+",
+		'-': "\\-",
+		'=': "\\=",
+		'|': "\\|",
+		'{': "\\{",
+		'}': "\\}",
+		'.': "\\.",
+		'!': "\\!",
+	}
+
+	var result strings.Builder
+	for _, char := range input {
+		if replacement, ok := replaceMap[char]; ok {
+			result.WriteString(replacement)
+		} else {
+			result.WriteRune(char)
+		}
+	}
+
+	return result.String()
 }

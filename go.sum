@@ -1,5 +1,9 @@
 github.com/go-telegram/bot v1.1.4 h1:CdaDMQpz/P6bRPE2km0BH+f9y+ref/Y7HtY8exR0ouM=
 github.com/go-telegram/bot v1.1.4/go.mod h1:i2TRs7fXWIeaceF3z7KzsMt/he0TwkVC680mvdTFYeM=
+github.com/go-telegram/bot v1.1.5 h1:M7LY0Y0gssqKJb466q/XXYsiklz6mylHG1AJQ6SMVTU=
+github.com/go-telegram/bot v1.1.5/go.mod h1:i2TRs7fXWIeaceF3z7KzsMt/he0TwkVC680mvdTFYeM=
+github.com/go-telegram/ui v0.3.1 h1:3mAlx0Z3hygFgbsZm64WMWt4TLUe0b5c8u7EYPViwJc=
+github.com/go-telegram/ui v0.3.1/go.mod h1:QbZbHcP+Ge9T/vypsmkAzedtzLO1sobK4zEACDgRwJA=
 github.com/lib/pq v1.10.9 h1:YXG7RB+JIjhP29X+OtkiDnYaXQwpS4JEWq7dtCCRUEw=
 github.com/lib/pq v1.10.9/go.mod h1:AlVN5x4E4T544tWzH6hKfbfQvm3HdbOxrmggDNAPY9o=
 github.com/shopspring/decimal v1.3.1 h1:2Usl1nmF/WZucqkFZhnfFYxxxu8LG21F6nPQBE5gKV8=

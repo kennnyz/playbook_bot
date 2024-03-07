@@ -82,6 +82,7 @@ func (r *repository) getDeals(userID int64) ([]*Deal, error) {
         FROM Deals AS d
         JOIN Pairs AS p ON d.pair_id = p.pair_id
         WHERE d.user_id = $1
+        ORDER BY d.deal_date DESC
     `
 
 	rows, err := r.conn.Query(query, userID)
