@@ -356,6 +356,16 @@ func getHistoryCallbackHandler(ctx context.Context, b *bot.Bot, update *models.U
 		return
 	}
 
+	if len(userDeals) == 0 {
+		if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
+			ChatID: getChatID(update),
+			Text:   "кажется у вас еще нет сделок :(",
+		}); err != nil {
+			log.Printf("can't send message to %v, error: %v", getChatID(update), err)
+		}
+		return
+	}
+
 	data := make([]string, 0, len(userDeals))
 	for i, deal := range userDeals {
 		data = append(data, telegramFormatString(fmt.Sprintf("%v. Пара: %s\nКоличество: %s\nПокупка: %s$\nПродажа: %s$\nПрибыль: %s$\nПроцент прибыли: %s%%\nДата: %s\n", i+1, deal.Pair, deal.Amount.String(), deal.BuyPrice.String(), deal.SellPrice.String(), deal.Profit.String(), deal.ProfitPercent.String(), deal.Date.Format("02-01-2006"))))

@@ -91,7 +91,7 @@ func (r *repository) getDeals(userID int64) ([]*Deal, error) {
 	}
 	defer rows.Close()
 
-	deals := []*Deal{}
+	var deals []*Deal
 
 	for rows.Next() {
 		var deal Deal
